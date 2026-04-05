@@ -1,0 +1,82 @@
+### Reachly API — HTTP examples (works with VS Code REST Client extension)
+
+@base = http://localhost:3000/api
+@token = PASTE_YOUR_JWT_HERE
+
+### Health check
+GET http://localhost:3000/health
+
+### Register as influencer
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "sana@reachly.pk",
+  "password": "testpass123",
+  "name": "Sana Amjad",
+  "role": "influencer",
+  "handle": "sanaamjad"
+}
+
+### Login
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "sana@reachly.pk",
+  "password": "testpass123"
+}
+
+### Get current user
+GET {{base}}/auth/me
+Authorization: Bearer {{token}}
+
+### List all influencers
+GET {{base}}/influencers
+
+### Get influencer profile + session types
+GET {{base}}/influencers/sanaamjad
+
+### Get availability for a date
+GET {{base}}/influencers/sanaamjad/availability?date=2026-04-07
+
+### Create a session type (influencer token)
+POST {{base}}/sessions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "Quick Chat",
+  "description": "Ask me anything.",
+  "duration_minutes": 20,
+  "price_pkr": 2500
+}
+
+### Create a booking (follower token)
+POST {{base}}/bookings
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "session_type_id": "PASTE_SESSION_TYPE_UUID",
+  "influencer_id": "PASTE_INFLUENCER_UUID",
+  "scheduled_at": "2026-04-07T11:30:00+05:00",
+  "payment_method": "jazzcash",
+  "note": "Would love to discuss growing my Instagram!"
+}
+
+### Get my bookings
+GET {{base}}/bookings
+Authorization: Bearer {{token}}
+
+### Confirm a booking (influencer token)
+PATCH {{base}}/bookings/PASTE_BOOKING_UUID/confirm
+Authorization: Bearer {{token}}
+
+### Cancel a booking
+PATCH {{base}}/bookings/PASTE_BOOKING_UUID/cancel
+Authorization: Bearer {{token}}
+
+### Get influencer dashboard
+GET {{base}}/dashboard
+Authorization: Bearer {{token}}
