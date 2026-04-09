@@ -12,6 +12,7 @@ import bookingRoutes from './routes/bookings.js';
 import dashboardRoutes from './routes/dashboard.js';
 import paymentRoutes from './routes/payments.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import adminRoutes from './routes/admin.js'
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -45,6 +46,7 @@ app.use('/api/influencers', influencerRoutes);
 app.use('/api/sessions',    sessionRoutes);
 app.use('/api/bookings',    bookingRoutes);
 app.use('/api/dashboard',   dashboardRoutes);
+app.use('/api/admin', adminRoutes)
 app.use('/api/payments',    paymentRoutes);
 
 // 404
