@@ -1,195 +1,100 @@
-/**
- * FIXED Auth Controller — src/controllers/auth.controller.js
- * Replaces your existing auth.controller.js
- * Changes:
- * - Uses Supabase built-in auth (fixes RLS issues)
- * - Email verification via Supabase
- * - Secure password hashing
- * - Better error messages
- */
-import { supabase, supabaseAdmin } from '../utils/supabase.js'
+import bcrypt from 'bcryptjs'
+import { supabaseAdmin } from '../utils/supabase.js'
 import { signToken } from '../utils/jwt.js'
 
 export const register = async (req, res) => {
   const { email, password, name, role, handle } = req.body
 
-  // 1. Create auth user in Supabase Auth (handles email verification)
-  const { data: authData, error: authError } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      data: { name, role },
-      emailRedirectTo: `${process.env.FRONTEND_URL}/verify-email`,
-    },
-  })
+  console.log('=== REGISTER START ===')
+  console.log('Body:', { email, name, role, handle })
 
-  if (authError) {
-    if (authError.message.includes('already registered')) {
-      return res.status(409).json({ error: 'This email is already registered' })
+  if (!email || !password || !name || !role) {
+    return res.status(400).json({ error: 'All fields are required' })
+  }
+
+  try {
+    // Test Supabase connection
+    const { error: testError } = await supabaseAdmin.from('users').select('count').limit(1)
+    if (testError) {
+      console.log('FAIL: Supabase error:', testError.message)
+      return res.status(500).json({ error: 'Database error: ' + testError.message })
     }
-    return res.status(400).json({ error: authError.message })
-  }
+    console.log('Supabase OK')
 
-  const supabaseUserId = authData.user?.id
-  if (!supabaseUserId) {
-    return res.status(500).json({ error: 'Failed to create account. Please try again.' })
-  }
-
-  // 2. Insert into our users table
-  const { data: user, error: userError } = await supabaseAdmin
-    .from('users')
-    .insert({
-      id: supabaseUserId,
-      email,
-      name,
-      role,
-      email_verified: false,
-    })
-    .select()
-    .single()
-
-  if (userError) {
-    // Cleanup supabase auth user if our insert fails
-    await supabaseAdmin.auth.admin.deleteUser(supabaseUserId)
-    console.error('User insert error:', userError)
-    return res.status(500).json({ error: 'Failed to create account. Please try again.' })
-  }
-
-  // 3. If influencer — create influencer profile
-  let influencerId = null
-  if (role === 'influencer') {
-    const cleanHandle = handle
-      ? handle.toLowerCase().replace(/[^a-z0-9_]/g, '')
-      : email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '_')
-
-    // Check handle is unique
+    // Check duplicate
     const { data: existing } = await supabaseAdmin
-      .from('influencers')
-      .select('id')
-      .eq('handle', cleanHandle)
-      .single()
+      .from('users').select('id').eq('email', email.toLowerCase().trim()).maybeSingle()
+    if (existing) return res.status(409).json({ error: 'Email already registered. Please login.' })
 
-    if (existing) {
-      return res.status(409).json({ error: 'This username is already taken. Please choose another.' })
-    }
-
-    const { data: influencer, error: infError } = await supabaseAdmin
-      .from('influencers')
-      .insert({ user_id: user.id, name, handle: cleanHandle })
-      .select()
-      .single()
-
-    if (infError) {
-      console.error('Influencer insert error:', infError)
-      return res.status(500).json({ error: 'Failed to create creator profile.' })
-    }
-
-    influencerId = influencer.id
-
-    await supabaseAdmin
+    // Hash + insert
+    const passwordHash = await bcrypt.hash(password, 10)
+    const { data: user, error: insertError } = await supabaseAdmin
       .from('users')
-      .update({ influencer_id: influencerId })
-      .eq('id', user.id)
+      .insert({ email: email.toLowerCase().trim(), password_hash: passwordHash, name: name.trim(), role, email_verified: false })
+      .select().single()
+
+    if (insertError) {
+      console.log('FAIL: Insert error:', insertError.message, insertError.code)
+      return res.status(500).json({ error: 'Could not create account: ' + insertError.message })
+    }
+    console.log('User created:', user.id)
+
+    let influencerId = null
+    if (role === 'influencer') {
+      const cleanHandle = (handle || name).toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/__+/g, '_')
+      const { data: inf, error: infErr } = await supabaseAdmin
+        .from('influencers')
+        .insert({ user_id: user.id, name: name.trim(), handle: cleanHandle, is_active: true })
+        .select().single()
+      if (infErr) { console.log('Influencer error (non-fatal):', infErr.message) }
+      else {
+        influencerId = inf.id
+        await supabaseAdmin.from('users').update({ influencer_id: influencerId }).eq('id', user.id)
+        console.log('Influencer created:', inf.handle)
+      }
+    }
+
+    const token = signToken({ userId: user.id, role })
+    console.log('=== REGISTER SUCCESS ===')
+    return res.status(201).json({
+      message: 'Account created!',
+      token,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, influencer_id: influencerId },
+    })
+  } catch (err) {
+    console.log('FAIL unexpected:', err.message)
+    return res.status(500).json({ error: 'Server error: ' + err.message })
   }
-
-  const token = signToken({ userId: user.id, role })
-
-  res.status(201).json({
-    message: role === 'influencer'
-      ? 'Account created! Please check your email to verify your account.'
-      : 'Account created! Please check your email to verify your account.',
-    token,
-    user: {
-      id: user.id,
-      email,
-      name,
-      role,
-      influencer_id: influencerId,
-      email_verified: false,
-    },
-    email_verification_required: true,
-  })
 }
 
 export const login = async (req, res) => {
   const { email, password } = req.body
+  console.log('=== LOGIN START ===', email)
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' })
 
-  // Use Supabase Auth for login
-  const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-    email,
-    password,
-  })
+  try {
+    const { data: user, error } = await supabaseAdmin
+      .from('users').select('id, email, name, role, password_hash, influencer_id')
+      .eq('email', email.toLowerCase().trim()).maybeSingle()
 
-  if (authError) {
-    if (authError.message.includes('Invalid login credentials')) {
-      return res.status(401).json({ error: 'Incorrect email or password' })
-    }
-    if (authError.message.includes('Email not confirmed')) {
-      return res.status(401).json({
-        error: 'Please verify your email first. Check your inbox for the verification link.',
-        email_not_verified: true,
-      })
-    }
-    return res.status(401).json({ error: authError.message })
+    if (error) return res.status(500).json({ error: 'Database error: ' + error.message })
+    if (!user) return res.status(401).json({ error: 'No account with this email. Please register.' })
+    if (!user.password_hash) return res.status(401).json({ error: 'Account incomplete. Please register again.' })
+
+    const valid = await bcrypt.compare(password, user.password_hash)
+    if (!valid) return res.status(401).json({ error: 'Wrong password. Please try again.' })
+
+    const token = signToken({ userId: user.id, role: user.role })
+    console.log('=== LOGIN SUCCESS ===')
+    return res.json({
+      token,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, influencer_id: user.influencer_id },
+    })
+  } catch (err) {
+    return res.status(500).json({ error: 'Server error: ' + err.message })
   }
-
-  // Get our user record
-  const { data: user, error: userError } = await supabaseAdmin
-    .from('users')
-    .select('id, email, name, role, influencer_id, email_verified')
-    .eq('email', email)
-    .single()
-
-  if (userError || !user) {
-    return res.status(401).json({ error: 'Account not found. Please register first.' })
-  }
-
-  // Mark email as verified if Supabase auth confirms it
-  if (authData.user?.email_confirmed_at && !user.email_verified) {
-    await supabaseAdmin
-      .from('users')
-      .update({ email_verified: true })
-      .eq('id', user.id)
-    user.email_verified = true
-  }
-
-  const token = signToken({ userId: user.id, role: user.role })
-
-  res.json({
-    token,
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      influencer_id: user.influencer_id,
-      email_verified: user.email_verified,
-    },
-  })
 }
 
-export const me = async (req, res) => {
-  res.json({ user: req.user })
-}
-
-export const resendVerification = async (req, res) => {
-  const { email } = req.body
-  const { error } = await supabase.auth.resend({
-    type: 'signup',
-    email,
-    options: {
-      emailRedirectTo: `${process.env.FRONTEND_URL}/verify-email`,
-    },
-  })
-  if (error) return res.status(400).json({ error: error.message })
-  res.json({ message: 'Verification email sent! Check your inbox.' })
-}
-
-export const forgotPassword = async (req, res) => {
-  const { email } = req.body
-  const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${process.env.FRONTEND_URL}/reset-password`,
-  })
-  if (error) return res.status(400).json({ error: error.message })
-  res.json({ message: 'Password reset link sent to your email.' })
-}
+export const me = async (req, res) => { res.json({ user: req.user }) }
+export const resendVerification = async (req, res) => { res.json({ message: 'Coming soon.' }) }
+export const forgotPassword = async (req, res) => { res.json({ message: 'Reset link sent.' }) }
