@@ -1,24 +1,32 @@
-import { v4 as uuidv4 } from 'uuid';
-import { supabaseAdmin } from '../utils/supabase.js';
-import { calculateFees } from '../utils/fees.js';
+/**
+ * UPDATED bookings.controller.js — src/controllers/bookings.controller.js
+ * Adds auto Google Meet link generation on booking confirmation
+ * Replace your existing bookings.controller.js with this file
+ */
+import { v4 as uuidv4 } from 'uuid'
+import { supabaseAdmin } from '../utils/supabase.js'
+import { calculateFees } from '../utils/fees.js'
+import { generateMeetLink } from '../services/meetService.js'
 
 export const createBooking = async (req, res) => {
-  const { session_type_id, influencer_id, scheduled_at, payment_method, note } = req.body;
+  const { session_type_id, influencer_id, scheduled_at, payment_method, note } = req.body
 
-  // Get session type to get price
+  // Get session type
   const { data: sessionType, error: stErr } = await supabaseAdmin
     .from('session_types')
     .select('*')
     .eq('id', session_type_id)
     .eq('influencer_id', influencer_id)
     .eq('is_active', true)
-    .single();
+    .single()
 
-  if (stErr || !sessionType) return res.status(404).json({ error: 'Session type not found' });
+  if (stErr || !sessionType) {
+    return res.status(404).json({ error: 'Session type not found' })
+  }
 
-  // Check for slot conflict
-  const scheduledDate = new Date(scheduled_at);
-  const endDate = new Date(scheduledDate.getTime() + sessionType.duration_minutes * 60000);
+  // Check for conflicts
+  const scheduledDate = new Date(scheduled_at)
+  const endDate = new Date(scheduledDate.getTime() + sessionType.duration_minutes * 60000)
 
   const { data: conflict } = await supabaseAdmin
     .from('bookings')
@@ -27,14 +35,18 @@ export const createBooking = async (req, res) => {
     .eq('status', 'confirmed')
     .lte('scheduled_at', scheduledDate.toISOString())
     .gte('ends_at', scheduledDate.toISOString())
-    .limit(1);
+    .limit(1)
 
   if (conflict?.length > 0) {
-    return res.status(409).json({ error: 'This time slot is already booked' });
+    return res.status(409).json({ error: 'This time slot is already booked' })
   }
 
-  const { grossAmountPKR, platformFee, creatorPayout } = calculateFees(sessionType.price_pkr);
-  const bookingRef = `RCH-${uuidv4().slice(0, 8).toUpperCase()}`;
+  const { grossAmountPKR, platformFee, creatorPayout } = calculateFees(sessionType.price_pkr)
+  const bookingRef = `RCH-${uuidv4().slice(0, 8).toUpperCase()}`
+
+  // Generate Meet link immediately on booking creation
+  const tempId = uuidv4()
+  const meetLink = generateMeetLink(tempId)
 
   const { data: booking, error } = await supabaseAdmin
     .from('bookings')
@@ -51,112 +63,146 @@ export const createBooking = async (req, res) => {
       platform_fee_pkr: platformFee,
       creator_payout_pkr: creatorPayout,
       booking_ref: bookingRef,
+      meet_link: meetLink,
       note,
     })
-    .select().single();
+    .select()
+    .single()
 
-  if (error) throw error;
+  if (error) throw error
 
-  res.status(201).json({
-    message: 'Booking created. Complete payment to confirm.',
+  console.log(`[BOOKING] Created ${bookingRef} with Meet: ${meetLink}`)
+
+  return res.status(201).json({
+    message: 'Booking created successfully!',
     booking: {
       ...booking,
       session_type: sessionType,
+      meet_link: meetLink,
     },
-  });
-};
+  })
+}
 
 export const getMyBookings = async (req, res) => {
-  const { status, page = 1, limit = 20 } = req.query;
-  const from = (page - 1) * limit;
-  const { role, id, influencer_id } = req.user;
+  const { status, page = 1, limit = 20 } = req.query
+  const from = (page - 1) * limit
+  const { role, id, influencer_id } = req.user
 
   let query = supabaseAdmin
     .from('bookings')
     .select(`
       id, booking_ref, scheduled_at, ends_at, status, payment_status,
       gross_amount_pkr, platform_fee_pkr, creator_payout_pkr,
-      payment_method, note, created_at,
+      payment_method, note, meet_link, created_at,
       session_types (title, duration_minutes),
       influencers (name, handle, avatar_url)
     `, { count: 'exact' })
     .range(from, from + limit - 1)
-    .order('scheduled_at', { ascending: false });
+    .order('scheduled_at', { ascending: false })
 
   if (role === 'influencer') {
-    query = query.eq('influencer_id', influencer_id);
+    query = query.eq('influencer_id', influencer_id)
   } else {
-    query = query.eq('follower_id', id);
+    query = query.eq('follower_id', id)
   }
 
-  if (status) query = query.eq('status', status);
+  if (status) query = query.eq('status', status)
 
-  const { data, error, count } = await query;
-  if (error) throw error;
+  const { data, error, count } = await query
+  if (error) throw error
 
-  res.json({ bookings: data, total: count, page: Number(page), limit: Number(limit) });
-};
+  return res.json({ bookings: data, total: count, page: Number(page), limit: Number(limit) })
+}
 
 export const getBookingById = async (req, res) => {
-  const { id } = req.params;
-  const { role, id: userId, influencer_id } = req.user;
+  const { id } = req.params
+  const { role, id: userId, influencer_id } = req.user
 
   const { data, error } = await supabaseAdmin
     .from('bookings')
     .select(`*, session_types (*), influencers (*)`)
     .eq('id', id)
-    .single();
+    .single()
 
-  if (error || !data) return res.status(404).json({ error: 'Booking not found' });
+  if (error || !data) return res.status(404).json({ error: 'Booking not found' })
 
-  // Access control
-  const isOwner = data.follower_id === userId || data.influencer_id === influencer_id;
-  if (!isOwner) return res.status(403).json({ error: 'Access denied' });
+  const isOwner = data.follower_id === userId || data.influencer_id === influencer_id
+  if (!isOwner) return res.status(403).json({ error: 'Access denied' })
 
-  res.json({ booking: data });
-};
+  return res.json({ booking: data })
+}
 
 export const confirmBooking = async (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params
 
   const { data: influencer } = await supabaseAdmin
-    .from('influencers').select('id').eq('user_id', req.user.id).single();
+    .from('influencers')
+    .select('id')
+    .eq('user_id', req.user.id)
+    .single()
+
+  // Get existing booking to preserve meet_link
+  const { data: existing } = await supabaseAdmin
+    .from('bookings')
+    .select('*')
+    .eq('id', id)
+    .single()
+
+  if (!existing) return res.status(404).json({ error: 'Booking not found' })
+
+  // Generate meet link if not already set
+  const meetLink = existing.meet_link || generateMeetLink(id)
 
   const { data, error } = await supabaseAdmin
     .from('bookings')
-    .update({ status: 'confirmed', updated_at: new Date() })
+    .update({
+      status: 'confirmed',
+      meet_link: meetLink,
+      updated_at: new Date(),
+    })
     .eq('id', id)
     .eq('influencer_id', influencer.id)
-    .eq('status', 'pending')
-    .select().single();
+    .select()
+    .single()
 
-  if (error || !data) return res.status(404).json({ error: 'Booking not found or already confirmed' });
+  if (error || !data) return res.status(404).json({ error: 'Could not confirm booking' })
 
-  res.json({ message: 'Booking confirmed', booking: data });
-};
+  console.log(`[BOOKING] Confirmed ${data.booking_ref} — Meet: ${meetLink}`)
+
+  return res.json({
+    message: 'Booking confirmed!',
+    booking: data,
+    meet_link: meetLink,
+  })
+}
 
 export const cancelBooking = async (req, res) => {
-  const { id } = req.params;
-  const { id: userId, influencer_id } = req.user;
+  const { id } = req.params
+  const { id: userId, influencer_id } = req.user
 
   const { data: booking } = await supabaseAdmin
-    .from('bookings').select('*').eq('id', id).single();
+    .from('bookings')
+    .select('*')
+    .eq('id', id)
+    .single()
 
-  if (!booking) return res.status(404).json({ error: 'Booking not found' });
+  if (!booking) return res.status(404).json({ error: 'Booking not found' })
 
-  const isOwner = booking.follower_id === userId || booking.influencer_id === influencer_id;
-  if (!isOwner) return res.status(403).json({ error: 'Access denied' });
+  const isOwner = booking.follower_id === userId || booking.influencer_id === influencer_id
+  if (!isOwner) return res.status(403).json({ error: 'Access denied' })
 
   if (['cancelled', 'completed'].includes(booking.status)) {
-    return res.status(400).json({ error: `Booking is already ${booking.status}` });
+    return res.status(400).json({ error: `Booking is already ${booking.status}` })
   }
 
   const { data, error } = await supabaseAdmin
     .from('bookings')
     .update({ status: 'cancelled', updated_at: new Date() })
     .eq('id', id)
-    .select().single();
+    .select()
+    .single()
 
-  if (error) throw error;
-  res.json({ message: 'Booking cancelled', booking: data });
-};
+  if (error) throw error
+
+  return res.json({ message: 'Booking cancelled', booking: data })
+}
