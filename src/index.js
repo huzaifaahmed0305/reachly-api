@@ -13,6 +13,7 @@ import dashboardRoutes   from './routes/dashboard.js'
 import paymentRoutes     from './routes/payments.js'
 import adminRoutes       from './routes/admin.js'
 import { errorHandler }  from './middleware/errorHandler.js'
+import availabilityRoutes from './routes/availability.js'
 
 const app  = express()
 const PORT = process.env.PORT || 3000
