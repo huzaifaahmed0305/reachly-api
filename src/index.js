@@ -82,6 +82,7 @@ app.use('/api/bookings',    bookingRoutes)
 app.use('/api/dashboard',   dashboardRoutes)
 app.use('/api/payments',    paymentRoutes)
 app.use('/api/admin',       adminRoutes)
+app.use('/api/availability', availabilityRoutes)
 
 // ── 404 ────────────────────────────────────────────────────
 app.use((req, res) => {

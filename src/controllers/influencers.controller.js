@@ -83,3 +83,44 @@ export const setAvailability = async (req, res) => {
   if (error) throw error;
   res.json({ slots: data });
 };
+
+export const uploadAvatar = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' })
+
+    const { data: influencer } = await supabaseAdmin
+      .from('influencers').select('id, handle').eq('user_id', req.user.id).single()
+    if (!influencer) return res.status(404).json({ error: 'Influencer not found' })
+
+    const ext = req.file.mimetype.split('/')[1] || 'jpg'
+    const fileName = `avatars/${influencer.id}.${ext}`
+
+    // Upload to Supabase Storage
+    const { error: uploadErr } = await supabaseAdmin.storage
+      .from('reachly-avatars')
+      .upload(fileName, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: true,
+      })
+
+    if (uploadErr) throw uploadErr
+
+    // Get public URL
+    const { data: urlData } = supabaseAdmin.storage
+      .from('reachly-avatars')
+      .getPublicUrl(fileName)
+
+    const avatarUrl = urlData.publicUrl
+
+    // Save to influencer record
+    await supabaseAdmin
+      .from('influencers')
+      .update({ avatar_url: avatarUrl })
+      .eq('id', influencer.id)
+
+    return res.json({ message: 'Avatar updated!', avatar_url: avatarUrl })
+  } catch (err) {
+    console.error('[AVATAR UPLOAD]', err.message)
+    return res.status(500).json({ error: err.message })
+  }
+}
